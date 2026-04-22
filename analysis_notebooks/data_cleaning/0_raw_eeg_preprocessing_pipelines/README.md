@@ -51,3 +51,227 @@ To comply with NDA and privacy constraints, the following are intentionally excl
 This folder is intended to describe the pipeline logic and processing stages at a high level. For public-facing reproducibility, use anonymized/synthetic data and re-implement the same sequence of steps in a clean notebook/script that does not depend on restricted assets.
 
 If you need to reproduce the exact processing steps, please contact me to link you with the contact person at the laboratory who can provide access to the original notebooks and data under the appropriate agreements.
+
+---
+
+## Metrics
+metrics is a nested dictionary structured as follows:
+
+`metrics[transformation][index][band][sub_band][cluster][channel]`
+
+example:
+metrics["z-program"]["ei"]["ei-1"]["ei-1a"]["lateral"]["montage"]["vars"]
+ → ['z-p_EI-1a_F7', 'z-p_EI-1a_F8', ...]
+
+---
+
+```python
+metrics[transformation][index][band][sub_band][cluster][channel]['vars']
+    │       │              │      │     │         │        │        └─ variables list
+    │       │              │      │     │         │        └─ electrode/montage
+    │       │              │      │     │         └─ central/lateral/all
+    │       │              │      │     └─ alpha_, alpha-lower-1, ...
+    │       │              │      └─ alpha, beta, ...
+    │       │              └─ mean-psd, gfp, ei, ai, fa
+    │       └─ raw, z-all, z-program, z-all-log, z-program-log
+    └─ metrics dictionary
+```
+
+
+
+### Metrics Parameter
+```python
+transformations = ["raw", "z-all", "z-program", "z-all-log", "z-program-log"]
+indices         = ["mean-psd", "gfp", "ei", "ai", "fa"]
+bands           = ["delta", "theta", "alpha", "beta", "gamma", "ei-1", "ei-2", "ei-3", "ai-1"]
+clusters        = ["central", "lateral", "all"]
+channels        = ["electrode", "montage"]
+```
+
+## Transformations
+
+### raw
+**Definition**: Original, untransformed values of the metrics.
+
+**Calculation**: Direct output from preprocessing (mean PSD, GFP, EI, AI, FAA).
+
+---
+
+### z-all
+**Definition**: Z-score standardization using the mean and standard deviation computed across the **entire stimuli** (all rows where `is-bin == 0`) for each participant.
+
+**Calculation**:
+```python
+# For each source_file, compute mean & std across all non-bin rows
+stats = df_filt.groupby("source_file")[variable].agg(["mean", "std"])
+
+# Then standardize:
+z_all = (raw_value - mean_all) / std_all
+```
+
+---
+
+### z-program
+**Definition**: Z-score standardization using a **baseline period** (minutes 1–4 of the TV program, corresponding to rows 13–60 of 5-second bins).
+
+**Calculation**:
+```python
+# Filter to 5s bins
+mask = (df_eeg["is-bin"] == 1) & (df_eeg["bin_param_duration"] == 5000)
+
+# For each source_file, compute mean & std on rows 13–60 (chronologically sorted)
+baseline_stats = df_filt.groupby("source_file").apply(
+    lambda g: g.sort_values("start_ms").iloc[12:60][variable].agg(["mean", "std"])
+)
+
+# Then standardize:
+z_program = (raw_value - mean_baseline) / std_baseline
+```
+
+---
+
+### z-all-log
+**Definition**: Z-score standardization after applying a **logarithmic (dB) transformation** to the raw values, using statistics computed across the **entire stimuli**.
+
+**Calculation**:
+```python
+# Transform raw values to dB
+raw_db = 10 * np.log10(raw_value)  # non-positive values → NaN
+
+# For each source_file, compute mean & std of dB-transformed values across all non-bin rows
+stats_db = df_filt.groupby("source_file")[variable_db].agg(["mean", "std"])
+
+# Standardize in dB space:
+z_all_log = (raw_db - mean_db_all) / std_db_all
+```
+
+---
+
+### z-program-log
+**Definition**: Z-score standardization after applying a **logarithmic (dB) transformation**, using a **baseline period** (minutes 1–4 of the TV program).
+
+**Calculation**:
+```python
+# Filter to 5s bins
+mask = (df_eeg["is-bin"] == 1) & (df_eeg["bin_param_duration"] == 5000)
+
+# Transform baseline rows to dB
+baseline_db = 10 * np.log10(baseline_values)  # non-positive → NaN
+
+# For each source_file, compute mean & std on dB-transformed rows 13–60
+baseline_stats_db = df_filt.groupby("source_file").apply(
+    lambda g: g.sort_values("start_ms").iloc[12:60][variable_db].agg(["mean", "std"])
+)
+
+# Transform full column to dB, then standardize:
+raw_db = 10 * np.log10(raw_value)
+z_program_log = (raw_db - mean_db_baseline) / std_db_baseline
+```
+
+---
+
+## Indices
+
+### mean-psd
+**Definition**: Mean Power Spectral Density (PSD) in V²/Hz for each frequency band.
+
+**Calculation**: Computed during preprocessing; represents the average power in a given band across time windows.
+
+---
+
+### gfp
+**Definition**: Global Field Power – measures the spatial standard deviation of the electric field across electrodes.
+
+**Calculation**:
+```python
+GFP = sqrt( (1/(2n)) * sum_{i=1}^n sum_{j=1}^n (u_i - u_j)^2 )
+
+# Simplified (summing over i < j):
+GFP = sqrt( sum_{i<j} (u_i - u_j)^2 / n )
+```
+
+---
+
+### ei (Engagement Index)
+**Definition**: Ratio-based indices designed to quantify cognitive engagement.
+
+**Calculations**:
+- **EI-1a**: `Beta / (Alpha + Theta)`
+- **EI-1b**: `Beta / (Alpha-lower-1 + Theta-lower)`
+- **EI-1c**: `Beta / (Alpha-lower-2 + Theta-lower)`
+- **EI-1d**: `Beta / (Alpha-upper + Theta-lower)`
+- **EI-2a**: `Beta / Alpha`
+- **EI-2b**: `Beta / Alpha-lower-1`
+- **EI-2c**: `Beta / Alpha-lower-2`
+- **EI-2d**: `Beta / Alpha-upper`
+- **EI-3a**: `1 / Alpha`
+- **EI-3b**: `1 / Alpha-lower-1`
+- **EI-3c**: `1 / Alpha-lower-2`
+- **EI-3d**: `1 / Alpha-upper`
+
+---
+
+### ai (Attention Index)
+**Definition**: Ratio-based indices designed to quantify attention levels.
+
+**Calculations**:
+- **AI-1a**: `Theta / Beta`
+- **AI-1b**: `Theta-lower / Beta`
+
+---
+
+### fa (Frontal Alpha Asymmetry)
+**Definition**: Logarithmic difference between right and left hemisphere alpha power, indicating approach/withdrawal motivation.
+
+**Calculation**:
+```python
+# For each cluster (frontolateral, frontolateral-ext, All):
+# Identify left (odd-numbered) and right (even-numbered) channels
+
+L = mean(left_channels_alpha_power)
+R = mean(right_channels_alpha_power)
+
+FAA = ln(R / L)
+```
+
+---
+
+## Bands
+
+- **delta**: ~0.5–4 Hz
+- **theta**: ~4–8 Hz (includes `theta-lower`)
+- **alpha**: ~8–13 Hz (includes `alpha-lower-1`, `alpha-lower-2`, `alpha-upper`)
+- **beta**: ~13–30 Hz
+- **gamma**: ~30+ Hz
+- **ei-1, ei-2, ei-3**: Engagement index sub-bands (a, b, c, d variants)
+- **ai-1**: Attention index sub-bands (a, b variants)
+
+---
+
+## Clusters
+
+- **central**: Frontal-midline and prefrontal electrodes (`Fp1`, `Fpz`, `Fp2`, `AF7`, `AF8`)
+- **lateral**: Frontolateral electrodes (`F7`, `F8`, `AF7`, `AF8`)
+- **all**: All 7 electrodes (`F7`, `AF7`, `Fp1`, `Fpz`, `Fp2`, `AF8`, `F8`)
+
+```python
+clusters = {
+    "All": ["F7", "AF7", "Fp1", "Fpz", "Fp2", "AF8", "F8"],
+    "frontal-midline": ["AF7", "Fp1", "Fpz", "Fp2", "AF8"],
+    "prefrontal": ["Fp1", "Fpz", "Fp2"],
+    "anterior-frontal": ["AF7", "AF8"],
+    "frontolateral": ["F7", "F8"],
+    "frontolateral-ext": ["F7", "AF7", "AF8", "F8"],
+    "left-frontolateral-ext": ["F7", "AF7"],
+    "right-frontolateral-ext": ["AF8", "F8"]
+}
+```
+
+---
+
+## Channels
+
+- **electrode**: Single-electrode measurements
+- **montage**: Aggregated (mean) across multiple electrodes within a cluster
+
+---
