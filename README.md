@@ -75,7 +75,7 @@ conda activate thesis_env
 Open the notebooks in `analysis_notebooks/` and run them in order (the folder READMEs indicate the intended sequence).
 
 ```bash
-jupyter notebook notebooks/
+jupyter notebook analysis_notebooks/
 ```
 
 ---
